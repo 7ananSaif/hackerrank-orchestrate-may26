@@ -77,7 +77,11 @@ def _handle_ticket(issue: str, subject: str, company: str,
     vague = detect_vague(text)
     howto = is_how_to(text)
 
-    hits = index.search(text, top_k=TOP_K, domain=domain, min_score=MIN_SCORE)
+    try:
+        hits = index.search(text, top_k=TOP_K, domain=domain, min_score=MIN_SCORE)
+    except Exception as exc:  # fail-safe: retrieval error -> treat as no grounding
+        logging.error("Retrieval failed for ticket %r: %s", text[:80], exc)
+        hits = []
     grounded = bool(hits) and hits[0].score >= MIN_SCORE
     top_score = hits[0].score if hits else 0.0
     product_area = (hits[0].chunk.product_area if hits
@@ -209,7 +213,18 @@ def run(corpus_dir: Path, tickets: Path, out: Path, log: Path) -> int:
         subject = _row_value(row, "Subject", "subject")
         company = _row_value(row, "Company", "company", "Domain", "domain")
 
-        decision = _handle_ticket(issue, subject, company, index)
+        try:
+            decision = _handle_ticket(issue, subject, company, index)
+        except Exception as exc:  # a single bad ticket must not crash the batch
+            logging.error("Ticket %d failed: %s", i, exc)
+            decision = {
+                "response": escalation_message("processing error", "unknown"),
+                "product_area": "general",
+                "status": "escalated",
+                "request_type": "product_issue",
+                "justification": ("Processing error while handling this ticket; "
+                                  "escalated to a human (fail-safe)."),
+            }
         out_row = {
             "issue": issue,
             "subject": subject,
